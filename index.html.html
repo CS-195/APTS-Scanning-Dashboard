@@ -1,0 +1,319 @@
+<!-- START OF FILE -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>APTS Scanning Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; color: #333; }
+    h2 { text-align: center; }
+    label { font-weight: bold; }
+    input[type="file"], select { margin: 10px 0; }
+    .tabs { display: flex; justify-content: center; margin-top: 20px; }
+    .tab { padding: 10px 20px; cursor: pointer; background-color: #0077cc; color: white; margin: 0 5px; border-radius: 5px 5px 0 0; }
+    .tab.active { background-color: #005fa3; }
+    .tab-content { display: none; margin-top: 20px; }
+    .tab-content.active { display: block; }
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    th, td { padding: 10px; border: 1px solid #ddd; text-align: center; }
+    th { background-color: #f4f4f4; }
+    .high { background-color: #d4edda; }
+    .medium { background-color: #fff3cd; }
+    .low { background-color: #f8d7da; }
+    .table-wrapper { overflow-x: auto; margin-bottom: 20px; }
+    .chart-container { position: relative; width: 100%; height: 400px; }
+    canvas { width: 100% !important; height: 100% !important; }
+  </style>
+</head>
+<body>
+  <h2>APTS Scanning Dashboard - <span id="monthName">Month</span></h2>
+  <label>Select Excel File:</label>
+  <input type="file" id="fileInput" accept=".xlsx, .xls" />
+  <br/>
+  <label>Select Store:</label>
+  <select id="storeFilter">
+    <option value="">All</option>
+  </select>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="staff">Staff Wise Report</div>
+    <div class="tab" data-tab="product">Product Wise Report</div>
+  </div>
+
+  <div class="tab-content active" id="staff">
+    <h3>Store-Level Summary</h3>
+    <table>
+      <thead><tr><th>Total Tokens</th><th>Distinct Scanned</th><th>Scan %</th><th>Avg Duration</th></tr></thead>
+      <tbody><tr id="storeMetricsRow"><td colspan="4">--</td></tr></tbody>
+    </table>
+
+    <div class="chart-container">
+      <canvas id="scanChart"></canvas>
+    </div>
+
+    <h3>Top 5 Performers</h3>
+    <table id="top5Table">
+      <thead><tr><th>Agent</th><th>Scanned</th><th>Total</th><th>Scan %</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h3>Bottom 5 Staff</h3>
+    <table id="bottom5Table">
+      <thead><tr><th>Agent</th><th>Scanned</th><th>Total</th><th>Scan %</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h3>Staff wise Duration & Scanning %</h3>
+    <table id="agentDurationTable">
+      <thead><tr><th>Agent</th><th>Avg Duration</th><th>Scan %</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="tab-content" id="product">
+    <h3>Product Scanning Details</h3>
+    <div class="table-wrapper">
+      <table id="categoryTable">
+        <thead><tr><th>Category</th><th>Total Tokens</th><th>Distinct Scanned Tokens</th><th>Scan %</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-wrapper">
+      <table id="productTypeTable">
+        <thead><tr><th>Product Type</th><th>Total Tokens</th><th>Distinct Scanned Tokens</th><th>Scan %</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-wrapper">
+      <table id="invoiceStatusTable">
+        <thead><tr><th>Invoice Status</th><th>Total Tokens</th><th>Distinct Scanned Tokens</th><th>Scan %</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let rawData = [];
+    let chartInstance = null;
+
+    function convertExcelDate(serial) {
+      const excelEpoch = new Date(1899, 11, 30);
+      const date = new Date(excelEpoch.getTime() + serial * 86400000);
+      return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    function getColorClass(scanPercent) {
+      if (scanPercent >= 80) return 'high';
+      if (scanPercent >= 50) return 'medium';
+      return 'low';
+    }
+
+    function addRowWithColor(tbody, cells) {
+      const row = document.createElement('tr');
+      cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell.value;
+        if (cell.isScanPercent) {
+          td.className = getColorClass(parseFloat(cell.value));
+        }
+        row.appendChild(td);
+      });
+      tbody.appendChild(row);
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        rawData = XLSX.utils.sheet_to_json(sheet);
+        populateStoreDropdown();
+        updateDashboard();
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    function populateStoreDropdown() {
+      const storeSet = new Set(rawData.map(r => r.STORENAME));
+      const dropdown = document.getElementById('storeFilter');
+      dropdown.innerHTML = '<option value="">All</option>';
+      [...storeSet].sort().forEach(store => {
+        dropdown.innerHTML += `<option value="${store}">${store}</option>`;
+      });
+      dropdown.onchange = updateDashboard;
+    }
+
+    function updateDashboard() {
+      const store = document.getElementById('storeFilter').value;
+      const filtered = rawData.filter(row => {
+        const reason = row.TOKEN_REASON ? row.TOKEN_REASON.toLowerCase().trim() : '';
+        return (store === "" || row.STORENAME === store) && reason !== "token not closed by agent";
+      });
+
+      if (filtered.length === 0) return;
+
+      const dateParts = convertExcelDate(filtered[0].CREATEDDATE).split('-');
+      document.getElementById('monthName').textContent = 
+        ["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(dateParts[1]) - 1];
+
+      let total = 0, scanned = 0, totalDuration = 0, durationCount = 0;
+      const scannedTokens = new Set(), dayMap = {}, agentMap = {}, durationMap = {};
+      const categoryMap = {}, productTypeMap = {}, invoiceStatusMap = {};
+
+      filtered.forEach(row => {
+        const date = convertExcelDate(row.CREATEDDATE);
+        const scan = row.SCANNED === "Yes" || row.SCANNED === 1 || row.SCANNED === "1";
+        const tokenId = row.TOKEN_ID;
+        const agent = row.ASSIGNED_TO_NAME || "Unassigned";
+        const duration = parseFloat(row.TOKEN_DURATION || 0);
+        const category = row.CATEGORY || "Unknown";
+        const productType = row.PRODUCTTYPE || "Unknown";
+        const invoiceStatus = row.INVOICESTATUS || "Unknown";
+
+        if (!agentMap[agent]) agentMap[agent] = { total: 0, scanned: new Set() };
+        agentMap[agent].total++;
+        if (scan) agentMap[agent].scanned.add(tokenId);
+
+        if (!isNaN(duration)) {
+          totalDuration += duration;
+          durationCount++;
+          if (!durationMap[agent]) durationMap[agent] = { total: 0, count: 0 };
+          durationMap[agent].total += duration;
+          durationMap[agent].count++;
+        }
+
+        for (const [map, key] of [[categoryMap, category], [productTypeMap, productType], [invoiceStatusMap, invoiceStatus]]) {
+          if (!map[key]) map[key] = { total: 0, scannedTokens: new Set() };
+          map[key].total++;
+          if (scan) map[key].scannedTokens.add(tokenId);
+        }
+
+        total++;
+        if (scan) {
+          scanned++;
+          scannedTokens.add(tokenId);
+        }
+
+        if (!dayMap[date]) dayMap[date] = { total: 0, scannedTokens: new Set() };
+        dayMap[date].total++;
+        if (scan) dayMap[date].scannedTokens.add(tokenId);
+      });
+
+      const avgDuration = durationCount ? (totalDuration / durationCount).toFixed(2) : 0;
+      const scanPercent = total ? ((scannedTokens.size / total) * 100).toFixed(2) : 0;
+      document.getElementById('storeMetricsRow').innerHTML = 
+        `<td>${total}</td><td>${scannedTokens.size}</td><td class="${getColorClass(scanPercent)}">${scanPercent}%</td><td>${avgDuration}</td>`;
+
+      const updateTable = (tbodyId, data, formatter) => {
+        const tbody = document.getElementById(tbodyId).querySelector('tbody');
+        tbody.innerHTML = '';
+        data.forEach(d => addRowWithColor(tbody, formatter(d)));
+      };
+
+      const agents = Object.entries(agentMap).map(([k, v]) => ({
+        agent: k, total: v.total, scanned: v.scanned.size,
+        scanPercent: (v.scanned.size / v.total) * 100
+      }));
+      agents.sort((a, b) => b.scanPercent - a.scanPercent);
+      updateTable('top5Table', agents.slice(0, 5), d => [
+        { value: d.agent }, { value: d.scanned }, { value: d.total }, 
+        { value: d.scanPercent.toFixed(2), isScanPercent: true }
+      ]);
+      updateTable('bottom5Table', agents.slice(-5), d => [
+        { value: d.agent }, { value: d.scanned }, { value: d.total }, 
+        { value: d.scanPercent.toFixed(2), isScanPercent: true }
+      ]);
+
+      const durationTable = Object.entries(durationMap).map(([k, v]) => ({
+        agent: k,
+        avgDuration: (v.total / v.count).toFixed(2),
+        scanPercent: ((agentMap[k].scanned.size / agentMap[k].total) * 100).toFixed(2)
+      })).sort((a, b) => b.scanPercent - a.scanPercent);
+      updateTable('agentDurationTable', durationTable, d => [
+        { value: d.agent }, { value: d.avgDuration }, { value: d.scanPercent, isScanPercent: true }
+      ]);
+
+      const categoryList = Object.entries(categoryMap).map(([key, val]) => ({
+        category: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
+      })).sort((a, b) => b.scanPercent - a.scanPercent);
+      updateTable('categoryTable', categoryList, d => [
+        { value: d.category }, { value: d.total }, { value: d.distinctScanned }, { value: d.scanPercent, isScanPercent: true }
+      ]);
+
+      const productTypeList = Object.entries(productTypeMap).map(([key, val]) => ({
+        productType: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
+      })).sort((a, b) => b.scanPercent - a.scanPercent);
+      updateTable('productTypeTable', productTypeList, d => [
+        { value: d.productType }, { value: d.total }, { value: d.distinctScanned }, { value: d.scanPercent, isScanPercent: true }
+      ]);
+
+      const invoiceStatusList = Object.entries(invoiceStatusMap).map(([key, val]) => ({
+        invoiceStatus: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
+      })).sort((a, b) => b.scanPercent - a.scanPercent);
+      updateTable('invoiceStatusTable', invoiceStatusList, d => [
+        { value: d.invoiceStatus }, { value: d.total }, { value: d.distinctScanned }, { value: d.scanPercent, isScanPercent: true }
+      ]);
+
+      const dayLabels = Object.keys(dayMap).sort((a, b) => {
+        const [aD, aM] = a.split('-').map(Number);
+        const [bD, bM] = b.split('-').map(Number);
+        return new Date(2024, aM - 1, aD) - new Date(2024, bM - 1, bD);
+      });
+      const totalTokens = dayLabels.map(date => dayMap[date].total);
+      const scannedTokensByDay = dayLabels.map(date => dayMap[date].scannedTokens.size);
+
+      if (chartInstance) chartInstance.destroy();
+      const ctx = document.getElementById('scanChart').getContext('2d');
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: dayLabels,
+          datasets: [
+            { label: 'Total Tokens', data: totalTokens, borderColor: '#0077cc', fill: false },
+            { label: 'Distinct Scanned Tokens', data: scannedTokensByDay, borderColor: '#00cc44', fill: false }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            datalabels: {
+              color: '#333',
+              anchor: 'end',
+              align: 'top',
+              formatter: Math.round,
+              font: { weight: 'bold' }
+            }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Date (DD-MM)' }},
+            y: { beginAtZero: true, title: { display: true, text: 'Token Count' }}
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+    }
+
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const activeTab = tab.getAttribute('data-tab');
+        document.querySelectorAll('.tab-content').forEach(content => {
+          content.classList.remove('active');
+          if (content.id === activeTab) content.classList.add('active');
+        });
+      });
+    });
+  </script>
+</body>
+</html>
+<!-- END OF FILE -->
