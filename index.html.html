@@ -121,14 +121,28 @@
     }
 
     async function fetchExcelData() {
-      const response = await fetch('https://github.com/CS-195/APTS-Scanning-Dashboard/blob/main/APTS_Scanned%20Data_Dashboard.xlsx');
-      const arrayBuffer = await response.arrayBuffer();
-      const data = new Uint8Array(arrayBuffer);
-      const workbook = XLSX.read(data, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      rawData = XLSX.utils.sheet_to_json(sheet);
-      populateStoreDropdown();
-      updateDashboard();
+      try {
+        const response = await fetch('https://github.com/CS-195/APTS-Scanning-Dashboard/blob/main/APTS_Scanned%20Data_Dashboard.xlsx');
+        
+        if (!response.ok) {
+          throw new Error('Network response was not ok ' + response.statusText);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const data = new Uint8Array(arrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        rawData = XLSX.utils.sheet_to_json(sheet);
+        if (rawData.length === 0) {
+          console.error('No data found in the Excel file');
+          return;
+        }
+
+        populateStoreDropdown();
+        updateDashboard();
+      } catch (error) {
+        console.error('Error loading the Excel file: ', error);
+      }
     }
 
     function populateStoreDropdown() {
@@ -232,7 +246,7 @@
       ]);
 
       const categoryList = Object.entries(categoryMap).map(([key, val]) => ({
-        category: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        category: key, total: val.total, distinctScanned: val.scannedTokens.size,
         scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
       })).sort((a, b) => b.scanPercent - a.scanPercent);
       updateTable('categoryTable', categoryList, d => [
@@ -240,7 +254,7 @@
       ]);
 
       const productTypeList = Object.entries(productTypeMap).map(([key, val]) => ({
-        productType: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        productType: key, total: val.total, distinctScanned: val.scannedTokens.size,
         scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
       })).sort((a, b) => b.scanPercent - a.scanPercent);
       updateTable('productTypeTable', productTypeList, d => [
@@ -248,7 +262,7 @@
       ]);
 
       const invoiceStatusList = Object.entries(invoiceStatusMap).map(([key, val]) => ({
-        invoiceStatus: key, total: val.total, distinctScanned: val.scannedTokens.size, 
+        invoiceStatus: key, total: val.total, distinctScanned: val.scannedTokens.size,
         scanPercent: ((val.scannedTokens.size / val.total) * 100).toFixed(2)
       })).sort((a, b) => b.scanPercent - a.scanPercent);
       updateTable('invoiceStatusTable', invoiceStatusList, d => [
